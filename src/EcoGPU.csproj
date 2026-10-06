@@ -9,7 +9,7 @@
     <ApplicationIcon Condition="Exists('EcoGPU.ico')">EcoGPU.ico</ApplicationIcon>
     <AssemblyName>EcoGPU</AssemblyName>
     <RootNamespace>EcoGPU</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Product>EcoGPU</Product>
     <Description>Frees the discrete GPU from apps on battery so it can power off.</Description>
     <Copyright>MIT License</Copyright>

@@ -81,14 +81,6 @@ namespace EcoGPU
             return null;
         }
 
-        /// <summary>A working integrated GPU that can keep driving the screen.</summary>
-        public static DisplayDevice FindWorkingIntegrated(List<DisplayDevice> devices, DisplayDevice discrete)
-        {
-            return devices.FirstOrDefault(d => d.Present && d.ErrorCode == 0 &&
-                (discrete == null || !string.Equals(d.InstanceId, discrete.InstanceId, StringComparison.OrdinalIgnoreCase)) &&
-                (d.Vendor == "Intel" || d.Vendor == "AMD"));
-        }
-
         public static GpuState StateOf(DisplayDevice d)
         {
             if (d == null) return GpuState.NotFound;
@@ -96,8 +88,6 @@ namespace EcoGPU
             if (d.ErrorCode == CodeDisabled) return GpuState.Off;
             return GpuState.Error;
         }
-
-        public static SwitchResult Disable(string instanceId) => RunPnpUtil("/disable-device", instanceId, CodeDisabled);
 
         public static SwitchResult Enable(string instanceId) => RunPnpUtil("/enable-device", instanceId, 0);
 
@@ -244,29 +234,6 @@ namespace EcoGPU
                 catch (InvalidOperationException) { } // service not installed
                 catch (Exception ex) { Log.Write("Service " + name + ": " + ex.Message); }
             }
-        }
-
-        /// <summary>
-        /// NVIDIA's "GPU activity" tray icon lives in this service and doesn't notice the GPU
-        /// being disabled, so it stays green. Restarting the service makes it redraw.
-        /// </summary>
-        public static void RestartNvidiaDisplayService()
-        {
-            try
-            {
-                using (var sc = new System.ServiceProcess.ServiceController("NVDisplay.ContainerLocalSystem"))
-                {
-                    if (sc.Status == System.ServiceProcess.ServiceControllerStatus.Running)
-                    {
-                        sc.Stop();
-                        sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
-                    }
-                    sc.Start();
-                    Log.Write("Restarted NVDisplay.ContainerLocalSystem");
-                }
-            }
-            catch (InvalidOperationException) { } // not installed
-            catch (Exception ex) { Log.Write("NVIDIA service restart: " + ex.Message); }
         }
 
         static SwitchResult RunPnpUtil(string verb, string instanceId, int expectedCode)
