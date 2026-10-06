@@ -246,6 +246,29 @@ namespace EcoGPU
             }
         }
 
+        /// <summary>
+        /// NVIDIA's "GPU activity" tray icon lives in this service and doesn't notice the GPU
+        /// being disabled, so it stays green. Restarting the service makes it redraw.
+        /// </summary>
+        public static void RestartNvidiaDisplayService()
+        {
+            try
+            {
+                using (var sc = new System.ServiceProcess.ServiceController("NVDisplay.ContainerLocalSystem"))
+                {
+                    if (sc.Status == System.ServiceProcess.ServiceControllerStatus.Running)
+                    {
+                        sc.Stop();
+                        sc.WaitForStatus(System.ServiceProcess.ServiceControllerStatus.Stopped, TimeSpan.FromSeconds(20));
+                    }
+                    sc.Start();
+                    Log.Write("Restarted NVDisplay.ContainerLocalSystem");
+                }
+            }
+            catch (InvalidOperationException) { } // not installed
+            catch (Exception ex) { Log.Write("NVIDIA service restart: " + ex.Message); }
+        }
+
         static SwitchResult RunPnpUtil(string verb, string instanceId, int expectedCode)
         {
             var psi = new ProcessStartInfo

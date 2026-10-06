@@ -152,6 +152,7 @@ namespace EcoGPU
                         {
                             var apps = GpuManager.GetNvidiaApps();
                             var r = GpuManager.Disable(dgpu.InstanceId);
+                            if (r.Success && dgpu.Vendor == "NVIDIA") GpuManager.RestartNvidiaDisplayService();
                             toast = r.Success
                                 ? (r.RebootRequired ? r.Message : "GPU turned off to save battery." +
                                    (apps.Count > 0 ? " Apps moved off it: " + string.Join(", ", apps.Take(5)) + "." : ""))

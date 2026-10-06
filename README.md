@@ -34,7 +34,7 @@ Before turning the GPU off, EcoGPU runs the same safety checks as G-Helper and L
 - **GPU busy** (over 10% load, e.g. a game is running): it waits and checks again every 30 s. The tray menu shows **Turn off now** if you want to force it.
 - It doesn't switch while the laptop is going to sleep, and it waits a few seconds after a plug/unplug so a loose cable doesn't make it flip back and forth.
 
-After re-enabling, it restarts the NVIDIA display container service if needed (G-Helper does this too), so NVIDIA Control Panel and the NVIDIA App keep working.
+After turning the GPU off, it restarts the NVIDIA display container service so NVIDIA's green "GPU activity" tray icon stops showing a GPU that is no longer there. After turning it back on, it makes sure that service is running (G-Helper does this too), so NVIDIA Control Panel and the NVIDIA App keep working.
 
 The menu also has **Release GPU**, the same as Legion Toolkit's *Deactivate GPU*: it restarts the device so apps let go of it and it can drop into its own low-power state, without disabling it.
 
