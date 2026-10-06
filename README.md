@@ -1,47 +1,48 @@
 # EcoGPU
 
-ASUS-style **GPU Eco mode** for any Windows laptop with an NVIDIA (or AMD) discrete GPU.
+Stops apps from keeping your laptop's discrete NVIDIA GPU awake on battery.
 
-EcoGPU sits in the system tray. Unplug the charger and it turns the discrete GPU off; plug back in and it turns it on again. ASUS (Armoury Crate / [G-Helper](https://github.com/seerge/g-helper)) and Lenovo ([Legion Toolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit)) offer this, but most other laptops (Razer, MSI, Gigabyte, etc.) don't.
+On an Optimus laptop the NVIDIA GPU is supposed to power off when nothing needs it. In practice, apps get stuck on it: a browser, Discord, an overlay, a launcher, RGB or monitoring software. The GPU then stays awake for hours while you're on battery, and Windows won't tell you which app is responsible.
 
-### Does it actually save power?
-
-It depends on whether anything is keeping the GPU awake:
-
-- **Nothing using the GPU:** NVIDIA Optimus already puts it into its deepest sleep state (D3) a few seconds after the last app lets go. Turning it off saves little beyond that.
-- **Something holding it:** a browser tab, Discord, an overlay, RGB/monitoring software, a game launcher. The GPU stays awake (D0) all the time, and it's hard to tell which app is responsible. In a rough test on a Razer Blade 16 (RTX 5090 Laptop), battery drain was about **3 W higher** with the GPU held awake at 0% load than with it disabled. On a laptop that idles around 30 W, that's roughly 10% more battery life.
-
-Turning the GPU off guarantees the sleeping case no matter which apps are running. The tray menu shows whether the GPU is **On, asleep** or **On, awake**. It reads this from Windows without waking the GPU, so you can see when something is holding it.
+EcoGPU sits in the system tray. When you're unplugged and the GPU has been awake for a minute without doing real work, EcoGPU restarts it. That forces every app off it, and NVIDIA's driver then powers it down completely. It's like ASUS's GPU Eco mode ([G-Helper](https://github.com/seerge/g-helper)) or Legion Toolkit's *Deactivate GPU* ([LenovoLegionToolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit)), but it works on any brand: Razer, MSI, Gigabyte, and others.
 
 ## Modes
 
 | Mode | What it does |
 |---|---|
-| **Optimized** (default) | Off on battery, on when plugged in |
-| **Standard** | Always on |
-| **Eco** | Always off |
+| **Optimized** (default) | GPU stays enabled. On battery, if apps keep it awake while idle, EcoGPU frees it so it can power off. Plugged in, it leaves the GPU alone. |
+| **Standard** | GPU stays enabled and EcoGPU never touches it |
+| **Eco** | GPU disabled in Device Manager |
 
-Tray icon: orange filled chip = GPU on, grey chip with a green leaf = GPU off.
+The tray icon is a green leaf when the GPU is powered off and an orange chip when it's awake. The menu shows the current state (*awake* / *asleep, powered off* / *disabled*). EcoGPU reads that from Windows without waking the GPU. Tools like nvidia-smi or GPU-Z wake it up just by asking.
 
-## How it works
+## Why it restarts the GPU instead of disabling it
 
-ASUS laptops have a firmware switch (an ACPI call) that cuts the dGPU's power. Other laptops don't have one, so EcoGPU disables the GPU as a PnP device (`pnputil /disable-device`), the same as clicking *Disable device* in Device Manager. The driver unloads, every app's hold on the GPU is dropped, and the PCIe link powers down. Re-enabling brings it back in a second or two.
+On a Razer Blade 16 (RTX 5090 Laptop) we compared the two:
 
-Before turning the GPU off, EcoGPU runs the same safety checks as G-Helper and Legion Toolkit:
+| GPU state | GPU | PCIe port |
+|---|---|---|
+| Enabled, idle, nothing holding it | D3 | **D3**: power fully cut (D3cold) |
+| Disabled in Device Manager | D3 | **D0**: port still powered (D3hot) |
 
-- **No integrated GPU running** (laptop is in dGPU-only / MUX mode): it doesn't switch, because the screen would go black.
-- **A display is connected to the dGPU** (e.g. an external monitor on a port wired to the NVIDIA GPU): it waits until that display is unplugged.
-- **GPU busy** (over 10% load, e.g. a game is running): it waits and checks again every 30 s. The tray menu shows **Turn off now** if you want to force it.
-- It doesn't switch while the laptop is going to sleep, and it waits a few seconds after a plug/unplug so a loose cable doesn't make it flip back and forth.
+With the driver loaded, NVIDIA's runtime power management cuts power to the GPU *and* its PCIe port. A disabled GPU has no driver to do that, so its port stays powered. Disabling looks like the bigger hammer, but it doesn't save more power than a GPU that's idle and properly asleep. So Optimized mode gets apps off the GPU and lets the driver do the rest. Eco mode is still there if you want the GPU fully disabled.
 
-After turning the GPU off, it restarts the NVIDIA display container service so NVIDIA's green "GPU activity" tray icon stops showing a GPU that is no longer there. After turning it back on, it makes sure that service is running (G-Helper does this too), so NVIDIA Control Panel and the NVIDIA App keep working.
+## How Optimized mode works
 
-The menu also has **Release GPU**, the same as Legion Toolkit's *Deactivate GPU*: it restarts the device so apps let go of it and it can drop into its own low-power state, without disabling it.
+Every 20 seconds on battery, EcoGPU checks the GPU's power state:
+
+1. If it's been **awake for 60 seconds**, EcoGPU checks how busy it is. Over 10% load (a game, a render, an AI job) means real work, so EcoGPU leaves it alone and checks again later.
+2. If it's idle, EcoGPU **restarts it** (`pnputil /restart-device`). Every app loses its hold on the GPU and falls back to the integrated GPU, and NVIDIA's driver powers the GPU off about 30 seconds later. The screen may flicker once.
+3. If something grabs the GPU again right away, EcoGPU **backs off**: 1, 2, 4, 8, then 15 minutes between restarts, so it isn't restarting the GPU constantly. It also shows a notification naming the app, so you can close it or set it to *Power saving* in *Settings → System → Display → Graphics*.
+
+It never releases the GPU while a display is connected to it (e.g. an external monitor on an HDMI port wired to the GPU), and it doesn't act while the laptop is going to sleep.
+
+**Release GPU now** in the tray menu does the same restart on demand, whether you're plugged in or not.
 
 ## Install
 
 1. Download `EcoGPU.exe` from [Releases](https://github.com/zorrobyte/EcoGPU/releases) and put it somewhere permanent, e.g. `%LOCALAPPDATA%\Programs\EcoGPU\`.
-2. Run it. It asks for admin rights because enabling and disabling a device requires them.
+2. Run it. It asks for admin rights, which restarting or disabling a device requires.
 3. Right-click the tray icon, open **Options**, and turn on **Start with Windows**. This creates a scheduled task that starts EcoGPU elevated at logon, with no UAC prompt each time.
 
 Needs Windows 10/11 and .NET Framework 4.8, which Windows 11 already includes. It's a single exe of about 40 KB.
@@ -55,13 +56,23 @@ EcoGPU.exe --enable-startup     register the logon task
 EcoGPU.exe --disable-startup    remove it
 ```
 
+## Settings
+
+`%APPDATA%\EcoGPU\settings.ini` (*Options → Open settings folder*):
+
+| Setting | Default | |
+|---|---|---|
+| `AutoRelease` | `True` | Optimized mode: free the GPU from apps on battery |
+| `AwakeGraceSeconds` | `60` | How long the GPU can stay awake and idle before it's released |
+| `DeviceInstanceId` | empty | Pick the GPU manually (the *Device instance path* from Device Manager). Empty means auto-detect. |
+
+A log of every action is written to `%APPDATA%\EcoGPU\EcoGPU.log`.
+
 ## Things to know
 
-- **Disabled stays disabled.** Windows remembers that the GPU is disabled across reboots. If you quit EcoGPU from the tray menu, it turns the GPU back on first (you can turn this off under *Options*). If you uninstall it while the GPU is off, re-enable the GPU in Device Manager under *Display adapters*.
-- **Apps on the GPU lose it.** Turning the GPU off takes it away from any app using it. Most apps (browsers, Discord, video players) move to the integrated GPU without trouble. Games and 3D apps can crash, which is why EcoGPU waits while the GPU is busy.
-- **Ports wired to the dGPU** (on many laptops the HDMI port, sometimes a USB-C port) don't work while the GPU is off.
-- **Picking the GPU manually.** EcoGPU finds the NVIDIA GPU automatically. To choose a different device, set `DeviceInstanceId` in `%APPDATA%\EcoGPU\settings.ini` to the *Device instance path* shown in Device Manager.
-- A log of every switch is written to `%APPDATA%\EcoGPU\EcoGPU.log` (*Options → Open log*).
+- **Eco mode survives reboots.** Windows remembers that the GPU is disabled. Quitting EcoGPU turns it back on first (you can turn this off in *Options*). If you uninstall EcoGPU while in Eco mode, re-enable the GPU in Device Manager under *Display adapters*.
+- **Apps lose the GPU on a release.** Browsers, Discord and video players switch to the integrated GPU without trouble. EcoGPU never releases the GPU while it's busy, so a running game won't be interrupted.
+- **Battery life is mostly the screen.** On the test laptop, full brightness drew about 20 W of a 30 W total. Turning brightness down did more for battery life than anything the GPU did.
 
 ## Build
 
@@ -69,11 +80,11 @@ EcoGPU.exe --disable-startup    remove it
 dotnet build src/EcoGPU.csproj -c Release
 ```
 
-Output: `src/bin/Release/net48/EcoGPU.exe`. Any .NET SDK 6 or newer works. It targets .NET Framework 4.8, so the exe runs without installing a runtime.
+Output: `src/bin/Release/net48/EcoGPU.exe`. Any .NET SDK 6 or newer works.
 
 ## Credits
 
-The approach and safety checks come from [G-Helper](https://github.com/seerge/g-helper) by seerge and [Lenovo Legion Toolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit) by Bartosz Cichecki.
+The idea and the safety checks come from [G-Helper](https://github.com/seerge/g-helper) by seerge and [Lenovo Legion Toolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit) by Bartosz Cichecki.
 
 ## License
 

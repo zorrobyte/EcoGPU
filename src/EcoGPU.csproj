@@ -9,9 +9,9 @@
     <ApplicationIcon Condition="Exists('EcoGPU.ico')">EcoGPU.ico</ApplicationIcon>
     <AssemblyName>EcoGPU</AssemblyName>
     <RootNamespace>EcoGPU</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.1.0</Version>
     <Product>EcoGPU</Product>
-    <Description>Turns off the discrete GPU on battery, back on when plugged in.</Description>
+    <Description>Frees the discrete GPU from apps on battery so it can power off.</Description>
     <Copyright>MIT License</Copyright>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

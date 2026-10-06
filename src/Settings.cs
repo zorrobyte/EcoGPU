@@ -21,6 +21,8 @@ namespace EcoGPU
         public bool RestoreOnExit = true;
         public bool Notifications = true;
         public int SwitchDelaySeconds = 5;
+        public bool AutoRelease = true;
+        public int AwakeGraceSeconds = 60;
         public string DeviceInstanceId = "";
 
         public static Settings Load()
@@ -40,6 +42,8 @@ namespace EcoGPU
                 if (values.TryGetValue("Notifications", out var n) && bool.TryParse(n, out var nb)) s.Notifications = nb;
                 if (values.TryGetValue("SwitchDelaySeconds", out var d) && int.TryParse(d, out var di)) s.SwitchDelaySeconds = Math.Max(0, di);
                 if (values.TryGetValue("DeviceInstanceId", out var id)) s.DeviceInstanceId = id;
+                if (values.TryGetValue("AutoRelease", out var ar) && bool.TryParse(ar, out var arb)) s.AutoRelease = arb;
+                if (values.TryGetValue("AwakeGraceSeconds", out var g) && int.TryParse(g, out var gi)) s.AwakeGraceSeconds = Math.Max(20, gi);
             }
             catch (Exception ex)
             {
@@ -59,6 +63,9 @@ namespace EcoGPU
                     "RestoreOnExit=" + RestoreOnExit,
                     "Notifications=" + Notifications,
                     "SwitchDelaySeconds=" + SwitchDelaySeconds,
+                    "; Optimized mode, on battery: restart the GPU when apps keep it awake this long without real work",
+                    "AutoRelease=" + AutoRelease,
+                    "AwakeGraceSeconds=" + AwakeGraceSeconds,
                     "; Leave empty to auto-detect the discrete GPU",
                     "DeviceInstanceId=" + DeviceInstanceId,
                 });

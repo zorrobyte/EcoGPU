@@ -19,6 +19,7 @@ namespace EcoGPU
         readonly SynchronizationContext ui;
         readonly System.Windows.Forms.Timer debounce = new System.Windows.Forms.Timer();
         readonly System.Windows.Forms.Timer retry = new System.Windows.Forms.Timer { Interval = 30000 };
+        readonly System.Windows.Forms.Timer watch = new System.Windows.Forms.Timer { Interval = 20000 };
 
         ToolStripMenuItem statusItem, powerItem, optimizedItem, standardItem, ecoItem, forceOffItem, releaseItem;
         ToolStripMenuItem startupItem, restoreItem, notifyItem;
@@ -29,6 +30,14 @@ namespace EcoGPU
         bool working, rerun, suspended;
         bool deferred;          // wanted Off but held back (busy / display attached)
         string deferNotified;   // reason already shown, so we don't repeat the toast every retry
+
+        // Auto-release (Optimized mode on battery)
+        DateTime? awakeSince;               // when we first saw the GPU awake
+        DateTime lastRelease = DateTime.MinValue;
+        DateTime nextReleaseAllowed = DateTime.MinValue;
+        int releaseStreak;                  // releases in a row where something grabbed the GPU again soon after
+        string holders = "";                // apps seen on the GPU at the last release
+        bool stuckNotified;
 
         public TrayApp()
         {
@@ -43,6 +52,8 @@ namespace EcoGPU
 
             debounce.Tick += (s, e) => { debounce.Stop(); Apply("power change"); };
             retry.Tick += (s, e) => { if (deferred) Apply("retry"); else retry.Stop(); };
+            watch.Tick += (s, e) => Watch();
+            watch.Start();
 
             SystemEvents.PowerModeChanged += OnPowerModeChanged;
 
@@ -92,7 +103,7 @@ namespace EcoGPU
             {
                 case Mode.Standard: return GpuState.On;
                 case Mode.Eco: return GpuState.Off;
-                default: return OnAC() ? GpuState.On : GpuState.Off;
+                default: return GpuState.On; // Optimized: stays enabled; NVIDIA powers it off when idle and Watch() frees it from apps
             }
         }
 
@@ -202,11 +213,11 @@ namespace EcoGPU
             var menu = new ContextMenuStrip();
             statusItem = new ToolStripMenuItem { Enabled = false };
             powerItem = new ToolStripMenuItem { Enabled = false };
-            optimizedItem = new ToolStripMenuItem("Optimized: off on battery, on when plugged in", null, (s, e) => SetMode(Mode.Optimized));
+            optimizedItem = new ToolStripMenuItem("Optimized: sleeps when idle, freed from apps on battery", null, (s, e) => SetMode(Mode.Optimized));
             standardItem = new ToolStripMenuItem("Standard: always on", null, (s, e) => SetMode(Mode.Standard));
-            ecoItem = new ToolStripMenuItem("Eco: always off", null, (s, e) => SetMode(Mode.Eco));
+            ecoItem = new ToolStripMenuItem("Eco: disabled", null, (s, e) => SetMode(Mode.Eco));
             forceOffItem = new ToolStripMenuItem("Turn off now (ignore busy check)", null, (s, e) => { deferNotified = null; Apply("forced", force: true); });
-            releaseItem = new ToolStripMenuItem("Release GPU (restart it so it can sleep)", null, (s, e) => ReleaseGpu());
+            releaseItem = new ToolStripMenuItem("Release GPU now (make apps let go)", null, (s, e) => Release(auto: false));
 
             startupItem = new ToolStripMenuItem("Start with Windows", null, (s, e) => ToggleStartup());
             restoreItem = new ToolStripMenuItem("Turn GPU back on when exiting", null, (s, e) =>
@@ -257,9 +268,9 @@ namespace EcoGPU
             switch (state)
             {
                 case GpuState.On:
-                    stateText = powerState == 0 ? "On, awake (something is using it)" : powerState == 3 ? "On, asleep" : "On";
+                    stateText = powerState == 0 ? "awake" + (holders != "" ? " (" + holders + ")" : "") : powerState == 3 ? "asleep, powered off" : "on";
                     break;
-                case GpuState.Off: stateText = "Off (saving power)"; break;
+                case GpuState.Off: stateText = "disabled"; break;
                 case GpuState.NotFound: stateText = "not found"; break;
                 case GpuState.Error: stateText = "error, see log"; break;
                 default: stateText = "checking…"; break;
@@ -276,7 +287,8 @@ namespace EcoGPU
             restoreItem.Checked = settings.RestoreOnExit;
             notifyItem.Checked = settings.Notifications;
 
-            tray.Icon = Icons.Get(working ? GpuState.Unknown : state);
+            // Enabled but powered off by the driver saves as much as disabled, so it gets the leaf too.
+            tray.Icon = Icons.Get(working ? GpuState.Unknown : state == GpuState.On && powerState == 3 ? GpuState.Off : state);
             string tip = "EcoGPU: GPU " + (state == GpuState.Off ? "off" : state == GpuState.On ? "on" : stateText) + " · " + settings.Mode;
             tray.Text = tip.Length > 63 ? tip.Substring(0, 63) : tip;
         }
@@ -297,34 +309,97 @@ namespace EcoGPU
         }
 
         /// <summary>
-        /// Like Legion Toolkit's "Deactivate GPU": restarting the device drops every app's
-        /// hold on it, so in Optimus mode it can drop into its low-power state.
+        /// Optimized mode on battery: if the GPU has been awake for a while without real work,
+        /// apps are just holding it (browsers, Discord, overlays...). Restart it so they let go and
+        /// NVIDIA's runtime power management can switch it fully off (D3cold).
+        /// Disabling the device instead leaves its PCIe port powered, so this saves more.
         /// </summary>
-        void ReleaseGpu()
+        void Watch()
+        {
+            if (suspended || working) return;
+            if (settings.Mode != Mode.Optimized || !settings.AutoRelease || OnAC())
+            {
+                awakeSince = null;
+                releaseStreak = 0;
+                stuckNotified = false;
+                return;
+            }
+
+            RefreshState();
+            UpdateMenu();
+            if (state != GpuState.On || powerState != 0)
+            {
+                awakeSince = null;
+                // Stayed asleep well past the last release: whatever held it is gone.
+                if (releaseStreak > 0 && DateTime.Now - lastRelease > TimeSpan.FromMinutes(10)) { releaseStreak = 0; stuckNotified = false; }
+                return;
+            }
+
+            if (awakeSince == null) awakeSince = DateTime.Now;
+            if (DateTime.Now - awakeSince.Value < TimeSpan.FromSeconds(settings.AwakeGraceSeconds)) return;
+            if (DateTime.Now < nextReleaseAllowed) return;
+
+            Release(auto: true);
+        }
+
+        /// <summary>Restart the GPU so apps let go of it (Legion Toolkit's "Deactivate GPU").</summary>
+        void Release(bool auto)
         {
             if (working) return;
             working = true;
             UpdateMenu();
             Task.Run(() =>
             {
-                string msg;
+                string msg = null;
+                bool released = false, busy = false;
                 try
                 {
                     var dgpu = GpuManager.FindDiscrete(GpuManager.GetDisplayDevices(), settings.DeviceInstanceId);
-                    if (dgpu == null) msg = "Discrete GPU not found.";
-                    else if (GpuManager.IsDisplayOnDevice(dgpu)) msg = "A display is connected to the discrete GPU, so it can't be released.";
+                    if (dgpu == null) msg = auto ? null : "Discrete GPU not found.";
+                    else if (GpuManager.IsDisplayOnDevice(dgpu)) msg = auto ? null : "A display is connected to the discrete GPU, so it can't be released.";
+                    else if (auto && IsBusy())
+                    {
+                        busy = true; // a game or render job: leave it alone
+                        Log.Write("Auto-release skipped: GPU busy");
+                    }
                     else
                     {
+                        var apps = GpuManager.GetNvidiaApps();
+                        holders = string.Join(", ", apps.Take(5));
                         var r = GpuManager.Restart(dgpu.InstanceId);
-                        msg = r.Success ? "GPU released. Apps that ask for it again will wake it." : "Release failed. " + r.Message;
+                        released = r.Success;
+                        Log.Write($"{(auto ? "Auto-release" : "Release")}: {(r.Success ? "ok" : r.Message)}; apps on GPU: {(holders == "" ? "none listed" : holders)}");
+                        if (!auto)
+                            msg = r.Success ? "GPU released. It powers off once nothing uses it." : "Release failed. " + r.Message;
                     }
                 }
-                catch (Exception ex) { msg = "Error: " + ex.Message; }
+                catch (Exception ex) { Log.Write("Release failed: " + ex); msg = auto ? null : "Error: " + ex.Message; }
+
                 ui.Post(_ =>
                 {
                     working = false;
+                    awakeSince = null;
+                    if (released)
+                    {
+                        // Grabbed again within 5 minutes of the last release: back off so we don't keep restarting it.
+                        releaseStreak = DateTime.Now - lastRelease < TimeSpan.FromMinutes(5) ? releaseStreak + 1 : 0;
+                        lastRelease = DateTime.Now;
+                        int backoff = Math.Min(60 * (1 << Math.Min(releaseStreak, 4)), 15 * 60);
+                        nextReleaseAllowed = DateTime.Now.AddSeconds(auto ? backoff : 0);
+                        if (auto && releaseStreak >= 2 && !stuckNotified)
+                        {
+                            stuckNotified = true;
+                            msg = "Something keeps waking the GPU" + (holders != "" ? ": " + holders : "") +
+                                  ". Close it, or set it to \"Power saving\" in Settings > System > Display > Graphics.";
+                        }
+                    }
+                    else if (busy)
+                    {
+                        nextReleaseAllowed = DateTime.Now.AddSeconds(60);
+                    }
                     UpdateMenu();
-                    if (settings.Notifications) tray.ShowBalloonTip(4000, "EcoGPU", msg, ToolTipIcon.Info);
+                    if (msg != null && settings.Notifications)
+                        tray.ShowBalloonTip(5000, "EcoGPU", msg, auto ? ToolTipIcon.Warning : ToolTipIcon.Info);
                 }, null);
             });
         }
@@ -337,6 +412,7 @@ namespace EcoGPU
         void ExitApp()
         {
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            watch.Stop();
             debounce.Stop();
             retry.Stop();
             if (settings.RestoreOnExit)
